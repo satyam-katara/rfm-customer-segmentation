@@ -48,6 +48,7 @@ This project turns transaction-level records into customer-level metrics and int
 - Score customers on a 1–5 scale using SQL Server's `NTILE(5)` window function.
 - Assign each eligible customer to one of five rule-based segments.
 - Compare segment size, gross eligible purchase value, average customer value, and monetary contribution.
+- Estimate Customer Lifetime Value (CLV) per segment over a 12-month forward horizon, with a retention-adjusted view.
 - Keep the workflow reproducible in SQL Server.
 
 ## Key Features
@@ -59,6 +60,7 @@ This project turns transaction-level records into customer-level metrics and int
 - **Rule-based segmentation:** Champions, Loyal Customers, At Risk, Hibernating, and Other Customers.
 - **Reusable final view:** `dbo.vw_Customer_RFM_Segments`.
 - **Business summaries:** customer count, total monetary value, average monetary value per customer, and percentage contribution.
+- **CLV per segment:** 12-month forward CLV from average purchase value × purchase frequency × expected lifetime, plus a retention-adjusted CLV that corrects the simple formula for dormant segments.
 
 ## Tech Stack
 
@@ -85,6 +87,7 @@ flowchart TD
     H --> I["Rule-based customer segments"]
     I --> J["vw_Customer_RFM_Segments"]
     J --> K["Segment summary and business insights"]
+    J --> L["CLV per segment (12-month projection)"]
 ```
 
 ## Dataset
@@ -147,13 +150,15 @@ rfm-customer-segmentation/
 │   ├── 02_data_quality_checks.sql
 │   ├── 03_rfm_analysis.sql
 │   ├── 04_customer_segmentation.sql
-│   └── 05_business_insights.sql
+│   ├── 05_business_insights.sql
+│   └── 06_clv_analysis.sql
 ├── screenshots/
-│   └── segment-summary.png
+│   ├── segment-summary.png
+│   └── clv-by-segment.png
 └── .gitignore
 ```
 
-Run the SQL files in `sql/` in numeric order (01 → 05).
+Run the SQL files in `sql/` in numeric order (01 → 06).
 
 ## Setup and Usage
 
@@ -209,7 +214,7 @@ This assumes both tables have the same columns in the same order and compatible 
 
 ### 5. Run the SQL analysis
 
-Run the SQL scripts in `sql/` in numeric order: `01_database_setup.sql` → `02_data_quality_checks.sql` → `03_rfm_analysis.sql` → `04_customer_segmentation.sql` → `05_business_insights.sql`.
+Run the SQL scripts in `sql/` in numeric order: `01_database_setup.sql` → `02_data_quality_checks.sql` → `03_rfm_analysis.sql` → `04_customer_segmentation.sql` → `05_business_insights.sql` → `06_clv_analysis.sql`.
 
 The workflow should cover:
 1. Data quality and exploratory checks.
@@ -218,6 +223,7 @@ The workflow should cover:
 4. RFM scoring and segmentation.
 5. Creation of `dbo.vw_Customer_RFM_Segments`.
 6. Segment summaries and validation queries.
+7. CLV per segment (12-month forward projection + retention-adjusted CLV).
 
 ### 6. Query the final view
 
@@ -291,6 +297,16 @@ The implemented rules are:
 
 These are project-specific segmentation rules, not universal RFM definitions. The order of the `CASE` conditions matters because a customer may satisfy more than one broad condition.
 
+### 6. Customer Lifetime Value (CLV) per segment
+
+CLV is computed per customer, then averaged per segment (script `06_clv_analysis.sql`, run in 7 small steps — one section at a time in SSMS):
+
+- **Tenure:** calendar months between the customer's first and last eligible purchase, plus 1 (minimum 1 month). In T-SQL: `DATEDIFF(MONTH, FirstPurchaseDate, LastPurchaseDate) + 1`.
+- **Average purchase value:** `Monetary / Frequency`.
+- **Purchase frequency:** `Frequency / TenureMonths` (purchases per month).
+- **CLV (12-month forward projection):** `AvgPurchaseValue × PurchasesPerMonth × 12`, which equals `Monetary × 12 / TenureMonths` — the customer's observed value annualised at their own purchase rate. The 12-month horizon is a stated assumption, not a measured lifetime.
+- **Retention-adjusted CLV:** the simple formula assumes every customer keeps buying at their observed rate, which overstates dormant segments — a Hibernating customer with a 2-month tenure annualises a small observed spend into a large CLV. The adjusted CLV multiplies by the segment's retention rate, defined as the share of customers with a purchase in the last 180 days (`RecencyDays <= 180`). Segments with no recently active customer show an adjusted CLV of 0: their value is recoverable only through win-back.
+
 ## Results
 
 The following are the outputs reported from the project's SQL Server runs.
@@ -326,6 +342,21 @@ The contribution percentages sum to 99.99% because each segment's percentage is 
 | Unique segmented customers | 5,878 |
 | Duplicate segment records | 0 |
 
+### CLV per segment (12-month forward projection)
+
+| Segment | Customers | Avg purchase value | Purchases / month | Avg tenure (mo) | Recently active | Avg CLV | Median CLV | Total CLV | Avg adj. CLV | Total adj. CLV | Adj. share |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Champions | 1,268 | 456.10 | 0.91 | 19.60 | 100.00% | 5,821.12 | 2,722.67 | 7,381,178.87 | 5,821.12 | 7,381,178.87 | 52.27% |
+| Other Customers | 1,632 | 417.11 | 0.68 | 7.51 | 98.41% | 3,405.22 | 1,605.84 | 5,557,312.96 | 3,350.97 | 5,468,777.34 | 38.72% |
+| Loyal Customers | 626 | 339.41 | 0.51 | 17.39 | 96.33% | 2,110.48 | 1,408.89 | 1,321,162.13 | 2,032.94 | 1,272,621.03 | 9.01% |
+| At Risk | 923 | 377.25 | 0.77 | 8.17 | 0.00% | 3,863.83 | 1,661.43 | 3,566,317.23 | 0.00 | 0.00 | 0.00% |
+| Hibernating | 1,429 | 337.89 | 0.92 | 2.09 | 0.00% | 3,770.08 | 2,436.60 | 5,387,445.95 | 0.00 | 0.00 | 0.00% |
+| **Total** | **5,878** | — | — | — | — | **3,949.20** | — | **23,213,417.15** | **2,402.62** | **14,122,577.24** | **100.00%** |
+
+All monetary figures are in the dataset's price units (gross eligible purchase value). "Recently active" is the share of customers with a purchase in the last 180 days. "Adj." is the retention-adjusted CLV. Segment counts match the segment summary above — the CLV figures come from the same SQL Server segmentation.
+
+**Reading the table:** the simple CLV ranks At Risk (3,863.83) and Hibernating (3,770.08) above Loyal Customers (2,110.48) — that is the formula's weakness, not a real finding. Hibernating customers have the shortest tenure (2.09 months), so annualising their spend inflates it, yet none of them has purchased in the last 180 days. The retention-adjusted column corrects the ranking: Champions hold 52.27% of forward value, Other Customers 38.72%, Loyal Customers 9.01%, and At Risk / Hibernating 0.00% until reactivated. Median CLV is far below average CLV in every segment (e.g. Champions 2,722.67 vs 5,821.12) — a small number of high-value customers pulls the average up.
+
 ## Business Insights
 
 1. **Champions account for most of the purchase value.** The 1,268 customers in this segment contribute 67.90% of gross eligible purchase value. Retention and loyalty experiments could be prioritized for this group.
@@ -333,6 +364,9 @@ The contribution percentages sum to 99.99% because each segment's percentage is 
 3. **At Risk customers may warrant re-engagement.** The segment contains 923 customers. A targeted win-back campaign could be tested and evaluated against campaign cost and incremental purchases.
 4. **Hibernating customers have the lowest average monetary value.** Their average value is 404.83 in the dataset's price units. Lower-cost reactivation tests may be more appropriate than expensive incentives.
 5. **The observed customer base is concentrated in the UK.** The raw data contains 5,410 identified UK customers out of 5,942 identified customers overall, approximately 91%.
+6. **Champions are worth protecting first — and by a wide margin.** Their retention-adjusted CLV is 5,821.12 per customer and 52.27% of the base's forward value, with 100% recently active. They are both the highest-value and the most engaged segment.
+7. **Other Customers is the second-largest forward-value pool.** At 38.72% of adjusted CLV and 98.41% recently active, this segment's 1,632 customers are engaged but low-spending — frequency and basket-size nudges have more headroom here than in any other segment.
+8. **At Risk and Hibernating carry no forward value without reactivation.** Neither segment has a customer active in the last 180 days, so their adjusted CLV is 0. Their simple CLV (3,863.83 and 3,770.08) is a formula artefact of short tenures, not expected revenue. The clearest case is the single highest-CLV customer (15098): a CLV of 478,998 from one month of buying, with no purchase in the last 180 days. Any value from these 2,352 customers must come from win-back, and the spend on it should be judged against reactivation rates, not against their historical monetary value.
 
 These are interpretations and potential actions based on the observed data, not measured campaign outcomes. Monetary figures should not be described as net revenue because return rows were excluded rather than deducted.
 
@@ -341,6 +375,10 @@ These are interpretations and potential actions based on the observed data, not 
 Segment value chart generated from the segment summary results (see [Results](#results)):
 
 ![RFM segment summary](screenshots/segment-summary.png)
+
+CLV per segment — simple 12-month CLV vs retention-adjusted CLV (see [CLV per segment](#clv-per-segment-12-month-forward-projection)):
+
+![CLV by segment](screenshots/clv-by-segment.png)
 
 ## Limitations and Future Improvements
 
@@ -351,7 +389,10 @@ Segment value chart generated from the segment summary results (see [Results](#r
 - **Analysis date is tied to the dataset.** The current reference date is based on the maximum transaction date plus one day. For ongoing reporting, make the analysis date an explicit parameter or use a documented reporting date.
 - **Currency metadata should be verified** before adding a currency symbol to results.
 - **SQL import types should be validated.** For production use, explicitly specify column lists in the combined view and validate numeric precision.
-- **Reproducibility.** The SQL files are ordered (01–05) with a run guide above; SSMS screenshots can be added to `screenshots/` alongside the summary chart.
+- **Reproducibility.** The SQL files are ordered (01–06) with a run guide above; SSMS screenshots can be added to `screenshots/` alongside the summary chart.
+- **CLV horizon is an assumption.** The 12-month forward projection is a chosen horizon, not a measured customer lifetime; a different horizon scales every CLV proportionally.
+- **Retention adjustment is binary.** A customer counts as retained if they purchased in the last 180 days and as lost otherwise; a graded survival model would refine the adjustment.
+- **The simple CLV overstates dormant segments.** Because it annualises observed spend, short-tenure inactive customers get inflated CLV. Use the retention-adjusted column for forward-looking decisions.
 - **Additional validation:** measure zero-price rows, compare row counts before and after each filter, and check how many customers have only excluded transactions.
 
 ## Challenges and Solutions
