@@ -1,52 +1,8 @@
 -- ============================================================
--- 06_clv_analysis.sql
--- RFM Customer Segmentation in Pure SQL (SQL Server / T-SQL)
--- Customer Lifetime Value (CLV) per segment.
--- Run after 04_customer_segmentation.sql (creates the view
--- vw_Customer_RFM_Segments) and 05_business_insights.sql.
---
--- HOW TO RUN THIS FILE IN SSMS:
--- The file is split into 7 small steps. Run them IN ORDER
--- (Step 1 -> Step 7). To run one step, select it from its
--- "STEP n START" line down to its "STEP n END" line and press
--- F5. Each step is a separate batch ending with GO, so you can
--- also run the whole file at once with F5.
---
--- METHOD (per customer, then averaged per segment):
---   TenureMonths      = DATEDIFF(MONTH, FirstPurchaseDate,
---                       LastPurchaseDate) + 1   (min 1)
---   AvgPurchaseValue  = Monetary / Frequency
---   PurchasesPerMonth = Frequency / TenureMonths
---   CLV_12mo          = AvgPurchaseValue * PurchasesPerMonth * 12
---                     = Monetary * 12 / TenureMonths
---   i.e. the customer's observed value annualised at their own
---   purchase rate -- a 12-month forward projection.
---
--- The 12-month horizon is a stated assumption, not a measured
--- lifetime. The simple formula assumes every customer keeps
--- buying at their observed rate, which overstates dormant
--- segments: a Hibernating customer with a 2-month tenure
--- annualises a small observed spend into a large CLV. The
--- retention-adjusted CLV corrects for this:
---   RetentionRate (per segment)
---                     = share of customers with a purchase in
---                       the last 180 days (RecencyDays <= 180)
---   CLV_12mo_Adj      = CLV_12mo * RetentionRate
--- Segments with no recently active customer show an adjusted
--- CLV of 0: their value is recoverable only through win-back.
---
--- Monetary figures are gross eligible purchase value (returns
--- excluded, not netted), same as the rest of this project.
--- ============================================================
-
-
--- ============================================================
 -- STEP 1: SELECT THE DATABASE
--- STEP 1 START -- select from here
 -- ============================================================
 USE RFM_Customer_Analytics;
 GO
--- STEP 1 END -- select up to here, then press F5
 
 
 -- ============================================================
@@ -54,7 +10,6 @@ GO
 -- First eligible purchase date per customer (the final RFM view
 -- has no FirstPurchaseDate, so it comes from the transaction
 -- view). Saved into a temp table for the next steps.
--- STEP 2 START -- select from here
 -- ============================================================
 IF OBJECT_ID('tempdb..#CustomerTenure') IS NOT NULL
     DROP TABLE #CustomerTenure;
@@ -71,10 +26,8 @@ WHERE
     AND Customer_ID IS NOT NULL
 GROUP BY Customer_ID;
 
--- Quick check: 5,878 rows expected
 SELECT COUNT(*) AS CustomersWithTenure FROM #CustomerTenure;
 GO
--- STEP 2 END -- select up to here, then press F5
 
 
 -- ============================================================
@@ -82,7 +35,6 @@ GO
 -- Tenure, average purchase value, purchases per month, 12-month
 -- CLV and the recently-active flag for every segmented customer.
 -- Saved into a temp table for the next steps.
--- STEP 3 START -- select from here
 -- ============================================================
 IF OBJECT_ID('tempdb..#CustomerCLV') IS NOT NULL
     DROP TABLE #CustomerCLV;
@@ -135,14 +87,12 @@ SELECT TOP 5
 FROM #CustomerCLV
 ORDER BY CLV_12mo DESC;
 GO
--- STEP 3 END -- select up to here, then press F5
 
 
 -- ============================================================
 -- STEP 4: RETENTION RATE PER SEGMENT
 -- Share of customers with a purchase in the last 180 days.
 -- Used to adjust CLV in the summary (Step 5).
--- STEP 4 START -- select from here
 -- ============================================================
 IF OBJECT_ID('tempdb..#SegmentRetention') IS NOT NULL
     DROP TABLE #SegmentRetention;
@@ -157,14 +107,12 @@ GROUP BY CustomerSegment;
 -- Quick check: 5 rows, one per segment
 SELECT * FROM #SegmentRetention;
 GO
--- STEP 4 END -- select up to here, then press F5
 
 
 -- ============================================================
 -- STEP 5: SEGMENT CLV SUMMARY  (main result)
 -- CLV per segment: simple 12-month CLV and retention-adjusted
 -- CLV, with the CLV column added to the segment summary.
--- STEP 5 START -- select from here
 -- ============================================================
 WITH SegmentMedian AS
 (
@@ -219,13 +167,11 @@ GROUP BY
     m.MedianCLV
 ORDER BY TotalCLVAdj DESC;
 GO
--- STEP 5 END -- select up to here, then press F5
 
 
 -- ============================================================
 -- STEP 6: OVERALL CLV TOTALS
 -- One row: total and average CLV for the whole customer base.
--- STEP 6 START -- select from here
 -- ============================================================
 SELECT
     COUNT(*) AS TotalCustomers,
@@ -240,14 +186,12 @@ FROM #CustomerCLV c
 INNER JOIN #SegmentRetention r
     ON r.CustomerSegment = c.CustomerSegment;
 GO
--- STEP 6 END -- select up to here, then press F5
 
 
 -- ============================================================
 -- STEP 7: VALIDATION
 -- Every segmented customer must have a tenure row and a CLV row.
 -- MissingTenure and MissingCLV must both be 0.
--- STEP 7 START -- select from here
 -- ============================================================
 SELECT
     COUNT(*) AS SegmentedCustomers,
@@ -261,4 +205,3 @@ LEFT JOIN #CustomerTenure t
 LEFT JOIN #CustomerCLV v
     ON v.Customer_ID = s.Customer_ID;
 GO
--- STEP 7 END -- select up to here, then press F5
